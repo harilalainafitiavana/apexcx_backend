@@ -28,10 +28,13 @@ class AgentViewSet(viewsets.ModelViewSet):
         'diplomes', 'formations_suivies', 'contact_urgence', 'rib_bancaire'
     )
     
-    def get_serializer_class(self):
-        """Utilise un serializer différent pour la liste et les détails."""
+    """def get_serializer_class(self):
+        Utilise un serializer différent pour la liste et les détails.
         if self.action == 'list':
             return AgentListSerializer
+        return AgentSerializer"""
+    
+    def get_serializer_class(self):
         return AgentSerializer
     
     def get_queryset(self):
