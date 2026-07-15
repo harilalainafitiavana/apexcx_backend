@@ -150,11 +150,24 @@ REST_FRAMEWORK = {
 }
 
 SIMPLE_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
-    "ROTATE_REFRESH_TOKENS": True,       # un nouveau refresh token est émis à chaque refresh
-    "BLACKLIST_AFTER_ROTATION": True,    # l'ancien refresh devient inutilisable
-    "AUTH_HEADER_TYPES": ("Bearer",),    # header: Authorization: Bearer <token>
+    'ACCESS_TOKEN_LIFETIME': timedelta(hours=8),      # Token expire après 8 heures
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),      # Refresh expire après 7 jours
+    'ROTATE_REFRESH_TOKENS': True,                    # Nouveau refresh token à chaque refresh
+    'BLACKLIST_AFTER_ROTATION': True,                 # Blacklist l'ancien refresh
+    'ALGORITHM': 'HS256',
+    'SIGNING_KEY': SECRET_KEY,
+    'VERIFYING_KEY': None,
+    'AUDIENCE': None,
+    'ISSUER': None,
+    'AUTH_HEADER_TYPES': ('Bearer',),
+    'USER_ID_FIELD': 'id',
+    'USER_ID_CLAIM': 'user_id',
+    'AUTH_TOKEN_CLASSES': ('rest_framework_simplejwt.tokens.AccessToken',),
+    'TOKEN_TYPE_CLAIM': 'token_type',
+    'JTI_CLAIM': 'jti',
+    'SLIDING_TOKEN_REFRESH_EXP_CLAIM': 'refresh_exp',
+    'SLIDING_TOKEN_LIFETIME': timedelta(minutes=5),
+    'SLIDING_TOKEN_REFRESH_LIFETIME': timedelta(days=1),
 }
 
 MEDIA_URL = "/media/"
