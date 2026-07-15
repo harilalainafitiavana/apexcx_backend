@@ -3,6 +3,24 @@ from rest_framework import serializers
 
 from .models import Role, Utilisateur, Profil, UtilisateurRole
 
+import base64
+import uuid
+from django.core.files.base import ContentFile
+
+
+class Base64ImageField(serializers.ImageField):
+    """
+    Accepte soit un fichier classique (upload multipart), soit une chaîne
+    base64 du type "data:image/png;base64,...." — c'est ce que génère
+    FileReader.readAsDataURL() côté frontend (PhotoUpload).
+    """
+    def to_internal_value(self, data):
+        if isinstance(data, str) and data.startswith('data:image'):
+            header, imgstr = data.split(';base64,')
+            ext = header.split('/')[-1]
+            data = ContentFile(base64.b64decode(imgstr), name=f'{uuid.uuid4()}.{ext}')
+        return super().to_internal_value(data)
+
 
 class UtilisateurSerializer(serializers.ModelSerializer):
     first_name = serializers.SerializerMethodField()
@@ -54,7 +72,7 @@ class LoginSerializer(TokenObtainPairSerializer):
         return data
     
 
-# --- À AJOUTER dans accounts/serializers.py (garder le reste du fichier existant) ---
+
 class RoleSerializer(serializers.ModelSerializer):
     label = serializers.CharField(source="get_nom_display", read_only=True)
 
@@ -66,11 +84,15 @@ class RoleSerializer(serializers.ModelSerializer):
 # Partie pour les détails d'un utilisateur avec ses rôles
 
 class ProfilSimpleSerializer(serializers.ModelSerializer):
-    """Serializer simplifié pour le profil"""
+    email = serializers.EmailField(source='utilisateur.email', read_only=True)
+
     class Meta:
         model = Profil
         fields = [
-            'id', 'nom', 'prenom', 'telephone', 'photo_profil'
+            'id', 'email', 'nom', 'prenom', 'telephone', 'photo_profil',
+            'date_naissance', 'lieu_naissance', 'cin', 'adresse', 'sexe',
+            'situation_matrimoniale', 'conjoint_nom', 'conjoint_telephone',
+            'nombre_enfants',
         ]
 
 
@@ -96,7 +118,7 @@ class UtilisateurDetailSerializer(serializers.ModelSerializer):
 
 class UtilisateurListSerializer(serializers.ModelSerializer):
     """Serializer pour la liste des utilisateurs"""
-    nom_complet = serializers.CharField(source='nom_complet', read_only=True)
+    nom_complet = serializers.CharField(read_only=True)
     roles = serializers.SerializerMethodField()
     
     class Meta:
@@ -112,20 +134,19 @@ class UtilisateurListSerializer(serializers.ModelSerializer):
 
 
 class ProfilCreateSerializer(serializers.ModelSerializer):
-    """
-    Crée un Utilisateur (email + mot de passe par défaut "123456"),
-    son Profil, et lui assigne un rôle optionnel — en une seule requête.
-    Utilisé par le formulaire "Ajouter un agent" du plan de salle.
-    """
     email = serializers.EmailField(write_only=True)
     role_id = serializers.PrimaryKeyRelatedField(
         queryset=Role.objects.all(), write_only=True, required=False, allow_null=True
     )
+    role_ids = serializers.PrimaryKeyRelatedField(
+        queryset=Role.objects.all(), many=True, write_only=True, required=False
+    )
+    photo_profil = Base64ImageField(required=False, allow_null=True)
 
     class Meta:
         model = Profil
         fields = [
-            'id', 'email', 'role_id', 'nom', 'prenom', 'telephone',
+            'id', 'email', 'role_id', 'role_ids', 'nom', 'prenom', 'telephone', 'photo_profil',
             'date_naissance', 'lieu_naissance', 'cin', 'adresse', 'sexe',
             'situation_matrimoniale', 'conjoint_nom', 'conjoint_telephone',
             'nombre_enfants',
@@ -134,12 +155,50 @@ class ProfilCreateSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         email = validated_data.pop('email')
         role = validated_data.pop('role_id', None)
+        roles_list = list(validated_data.pop('role_ids', []))
 
         utilisateur = Utilisateur.objects.create_user(email=email, password='123456')
-        if role:
-            UtilisateurRole.objects.create(utilisateur=utilisateur, role=role)
+
+        if role and role not in roles_list:
+            roles_list.append(role)
+        for r in roles_list:
+            UtilisateurRole.objects.create(utilisateur=utilisateur, role=r)
 
         profil = Profil.objects.create(utilisateur=utilisateur, **validated_data)
         return profil
 
 
+class ProfilUpdateSerializer(serializers.ModelSerializer):
+    email = serializers.EmailField(source='utilisateur.email', required=False)
+    actif = serializers.BooleanField(source='utilisateur.is_active', required=False)
+    role_ids = serializers.PrimaryKeyRelatedField(
+        queryset=Role.objects.all(), many=True, write_only=True, required=False
+    )
+    photo_profil = Base64ImageField(required=False, allow_null=True)
+
+    class Meta:
+        model = Profil
+        fields = [
+            'id', 'email', 'actif', 'role_ids', 'nom', 'prenom', 'telephone', 'photo_profil',
+            'date_naissance', 'lieu_naissance', 'cin', 'adresse', 'sexe',
+            'situation_matrimoniale', 'conjoint_nom', 'conjoint_telephone',
+            'nombre_enfants',
+        ]
+
+    def update(self, instance, validated_data):
+        utilisateur_data = validated_data.pop('utilisateur', None)
+        role_ids = validated_data.pop('role_ids', None)
+
+        if utilisateur_data:
+            if 'email' in utilisateur_data:
+                instance.utilisateur.email = utilisateur_data['email']
+            if 'is_active' in utilisateur_data:
+                instance.utilisateur.is_active = utilisateur_data['is_active']
+            instance.utilisateur.save()
+
+        if role_ids is not None:
+            UtilisateurRole.objects.filter(utilisateur=instance.utilisateur).delete()
+            for role in role_ids:
+                UtilisateurRole.objects.create(utilisateur=instance.utilisateur, role=role)
+
+        return super().update(instance, validated_data)

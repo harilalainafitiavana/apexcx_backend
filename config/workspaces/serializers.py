@@ -19,7 +19,7 @@ class ProjetSerializer(serializers.ModelSerializer):
 
 class PosteSerializer(serializers.ModelSerializer):
     """Serializer pour un poste individuel"""
-    # Informations sur l'agent occupant (s'il y en a un)
+    # Informations sur l'agent occupant 
     agent_nom = serializers.SerializerMethodField()
     agent_id = serializers.SerializerMethodField()
     agent_matricule = serializers.SerializerMethodField()

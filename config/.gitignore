@@ -12,12 +12,4 @@ venv/
 .env
 
 # Django
-staticfiles/
-media/
-
-# IDE
-.vscode/
-.idea/
-
-# OS
-.DS_Store
+stat

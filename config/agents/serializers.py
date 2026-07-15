@@ -76,6 +76,8 @@ class AgentSerializer(serializers.ModelSerializer):
     contact_urgence = ContactUrgenceSerializer(read_only=True)
     rib_bancaire = RibBancaireSerializer(read_only=True)
 
+    role = serializers.SerializerMethodField()
+
     # Champs pour l'écriture (on reçoit des IDs)
     projet_id = serializers.PrimaryKeyRelatedField(
         queryset=Projet.objects.all(),
@@ -134,7 +136,7 @@ class AgentSerializer(serializers.ModelSerializer):
             'type_contrat', 'superieur_hierarchique',
             'profil', 'projet', 'poste',
             'diplomes', 'formations_suivies',
-            'contact_urgence', 'rib_bancaire',
+            'contact_urgence', 'rib_bancaire', 'role',
             # Champs en écriture
             'profil_id', 'projet_id', 'poste_id',
             'diplomes_list', 'formations_list',
@@ -249,6 +251,18 @@ class AgentSerializer(serializers.ModelSerializer):
                 RibBancaire.objects.create(agent=instance, **rib_data)
 
         return instance
+    
+    def get_role(self, obj):
+        """Récupère le rôle de l'agent depuis son utilisateur."""
+        try:
+            if hasattr(obj, 'profil') and obj.profil:
+                if hasattr(obj.profil, 'utilisateur') and obj.profil.utilisateur:
+                    role_rel = obj.profil.utilisateur.utilisateur_roles.select_related('role').first()
+                    if role_rel and role_rel.role:
+                        return role_rel.role.nom
+        except Exception:
+            pass
+        return 'agent'
 
 
 class AgentListSerializer(serializers.ModelSerializer):
@@ -264,13 +278,26 @@ class AgentListSerializer(serializers.ModelSerializer):
     poste = PosteLiteSerializer(read_only=True)
     nom_complet = serializers.SerializerMethodField()
 
+    role = serializers.SerializerMethodField()
+
+    def get_role(self, obj):
+        """Récupère le rôle de l'agent depuis son utilisateur."""
+        try:
+            if obj.profil and obj.profil.utilisateur:
+                role_rel = obj.profil.utilisateur.utilisateur_roles.select_related('role').first()
+                if role_rel:
+                    return role_rel.role.nom
+        except Exception:
+            pass
+        return 'agent'
+
     class Meta:
         model = Agent
         fields = [
             'id', 'matricule', 'nom_complet', 'fonction',
             'statut', 'statut_presence', 'carte_esia', 'cnaps',
             'type_contrat', 'superieur_hierarchique',
-            'profil', 'projet', 'poste',
+            'profil', 'projet', 'poste', 'role'
         ]
 
     def get_nom_complet(self, obj):

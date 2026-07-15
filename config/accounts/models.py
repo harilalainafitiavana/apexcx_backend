@@ -9,9 +9,7 @@ from django.contrib.auth.models import PermissionsMixin
 from django.db import models
 
 
-# ------------------------------------------------------------------
-# Manager custom : création d'utilisateur/superuser via email
-# ------------------------------------------------------------------
+
 class UtilisateurManager(BaseUserManager):
     use_in_migrations = True
 
@@ -41,9 +39,7 @@ class UtilisateurManager(BaseUserManager):
 
         return self._create_user(email, password, **extra_fields)
 
-# ------------------------------------------------------------------
-# Utilisateur (table: utilisateurs) — LOGIN = email + mot de passe
-# ------------------------------------------------------------------
+
 class Utilisateur(AbstractBaseUser, PermissionsMixin):
     email = models.EmailField(unique=True, null=False, blank=False)
 
