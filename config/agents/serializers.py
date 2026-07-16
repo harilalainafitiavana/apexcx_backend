@@ -3,7 +3,7 @@ from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from accounts.models import Profil
 from .models import (
-    Agent, Diplome, FormationSuivie, ContactUrgence, RibBancaire
+    Agent, Conge, Diplome, FormationSuivie, ContactUrgence, RibBancaire, SoldeConge
 )
 from workspaces.models import Projet, Poste
 
@@ -37,6 +37,7 @@ class RibBancaireSerializer(serializers.ModelSerializer):
 
 class ProfilSerializer(serializers.ModelSerializer):
     email = serializers.EmailField(source='utilisateur.email', read_only=True)
+    role = serializers.SerializerMethodField()
 
     class Meta:
         model = Profil
@@ -44,16 +45,21 @@ class ProfilSerializer(serializers.ModelSerializer):
             'id', 'email', 'nom', 'prenom', 'telephone', 'photo_profil',
             'date_naissance', 'lieu_naissance', 'cin', 'adresse',
             'sexe', 'situation_matrimoniale', 'conjoint_nom',
-            'conjoint_telephone', 'nombre_enfants'
+            'conjoint_telephone', 'nombre_enfants', 'role'
         ]
 
-# ------------------------------------------------------------------
-# Serializers "lite" pour projet et poste : utilisés en LECTURE SEULE
-# dans AgentSerializer et AgentListSerializer, pour que le frontend
-# reçoive toujours des objets imbriqués {id, nom/code, ...} et jamais
-# un simple entier (PK). C'est ce qui manquait et causait le bug
-# "l'agent est bien créé mais ne s'affiche pas sur le poste".
-# ------------------------------------------------------------------
+    def get_role(self, obj):
+        """Récupère le rôle de l'utilisateur associé au profil."""
+        try:
+            if hasattr(obj, 'utilisateur') and obj.utilisateur:
+                role_rel = obj.utilisateur.utilisateur_roles.select_related('role').first()
+                if role_rel:
+                    return role_rel.role.nom
+        except Exception:
+            pass
+        return None
+
+
 class ProjetLiteSerializer(serializers.ModelSerializer):
     class Meta:
         model = Projet
@@ -302,3 +308,71 @@ class AgentListSerializer(serializers.ModelSerializer):
 
     def get_nom_complet(self, obj):
         return f"{obj.profil.prenom} {obj.profil.nom}"
+    
+
+
+# ============================================================
+# SERIALIZERS POUR LES CONGÉS
+# ============================================================
+
+class CongeSerializer(serializers.ModelSerializer):
+    """Serializer pour les congés avec les informations de l'agent."""
+    agent_matricule = serializers.CharField(source='agent.matricule', read_only=True)
+    agent_nom = serializers.CharField(source='agent.profil.nom', read_only=True)
+    agent_prenom = serializers.CharField(source='agent.profil.prenom', read_only=True)
+    agent_fonction = serializers.CharField(source='agent.fonction', read_only=True)
+    approuve_par_nom = serializers.SerializerMethodField()
+    type_conge_label = serializers.CharField(source='get_type_conge_display', read_only=True)
+    statut_label = serializers.CharField(source='get_statut_display', read_only=True)
+
+    class Meta:
+        model = Conge
+        fields = [
+            'id', 'agent', 'agent_matricule', 'agent_nom', 'agent_prenom', 'agent_fonction',
+            'type_conge', 'type_conge_label', 'date_debut', 'date_fin',
+            'duree_ouverte', 'duree_reelle', 'statut', 'statut_label',
+            'motif', 'date_demande', 'date_traitement',
+            'approuve_par', 'approuve_par_nom',
+            'commentaire_validation', 'annee_reference',
+            'date_creation', 'date_modification'
+        ]
+        read_only_fields = [
+            'date_demande', 'date_traitement', 'date_creation', 'date_modification',
+            'approuve_par_nom'
+        ]
+
+    def get_approuve_par_nom(self, obj):
+        """Récupère le nom de la personne qui a approuvé."""
+        if obj.approuve_par:
+            if hasattr(obj.approuve_par, 'profil'):
+                return f"{obj.approuve_par.profil.prenom} {obj.approuve_par.profil.nom}"
+            return obj.approuve_par.email
+        return None
+
+    def validate(self, data):
+        """Validation personnalisée des dates."""
+        date_debut = data.get('date_debut')
+        date_fin = data.get('date_fin')
+        
+        if date_debut and date_fin and date_debut > date_fin:
+            raise serializers.ValidationError({
+                'date_fin': 'La date de fin doit être postérieure à la date de début.'
+            })
+        
+        return data
+
+
+class SoldeCongeSerializer(serializers.ModelSerializer):
+    """Serializer pour les soldes de congés."""
+    agent_nom = serializers.CharField(source='agent.profil.nom', read_only=True)
+    agent_prenom = serializers.CharField(source='agent.profil.prenom', read_only=True)
+    agent_matricule = serializers.CharField(source='agent.matricule', read_only=True)
+
+    class Meta:
+        model = SoldeConge
+        fields = [
+            'id', 'agent', 'agent_matricule', 'agent_nom', 'agent_prenom',
+            'annee', 'total_jours', 'jours_pris', 'jours_restants', 'jours_en_attente',
+            'date_creation', 'date_modification'
+        ]
+        read_only_fields = ['date_creation', 'date_modification']

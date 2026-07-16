@@ -85,6 +85,7 @@ class RoleSerializer(serializers.ModelSerializer):
 
 class ProfilSimpleSerializer(serializers.ModelSerializer):
     email = serializers.EmailField(source='utilisateur.email', read_only=True)
+    role = serializers.SerializerMethodField()
 
     class Meta:
         model = Profil
@@ -92,8 +93,19 @@ class ProfilSimpleSerializer(serializers.ModelSerializer):
             'id', 'email', 'nom', 'prenom', 'telephone', 'photo_profil',
             'date_naissance', 'lieu_naissance', 'cin', 'adresse', 'sexe',
             'situation_matrimoniale', 'conjoint_nom', 'conjoint_telephone',
-            'nombre_enfants',
+            'nombre_enfants', 'role'
         ]
+
+    def get_role(self, obj):
+        """Récupère le rôle de l'utilisateur associé au profil."""
+        try:
+            if hasattr(obj, 'utilisateur') and obj.utilisateur:
+                role_rel = obj.utilisateur.utilisateur_roles.select_related('role').first()
+                if role_rel:
+                    return role_rel.role.nom
+        except Exception:
+            pass
+        return None
 
 
 class UtilisateurDetailSerializer(serializers.ModelSerializer):

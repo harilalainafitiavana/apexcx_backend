@@ -3,10 +3,12 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
-from django.db.models import Q
-from agents.models import Agent, Diplome, FormationSuivie, ContactUrgence, RibBancaire
-from agents.serializers import AgentSerializer, AgentListSerializer
+from django.db.models import Q, Sum
+from agents.models import Agent, Diplome, FormationSuivie, ContactUrgence, RibBancaire, Conge, SoldeConge
+from agents.serializers import AgentSerializer, AgentListSerializer, CongeSerializer, SoldeCongeSerializer
 from workspaces.models import Poste
+from django.utils import timezone
+
 
 
 class AgentViewSet(viewsets.ModelViewSet):
@@ -199,3 +201,287 @@ class AgentViewSet(viewsets.ModelViewSet):
             agent.poste.liberer()
         
         return super().destroy(request, *args, **kwargs)
+    
+
+
+class CongeViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet pour gérer les congés.
+    
+    - GET /api/conges/ : Liste de tous les congés
+    - POST /api/conges/ : Créer un nouveau congé
+    - GET /api/conges/{id}/ : Détails d'un congé
+    - PUT /api/conges/{id}/ : Mettre à jour un congé
+    - PATCH /api/conges/{id}/ : Mise à jour partielle
+    - DELETE /api/conges/{id}/ : Supprimer un congé
+    - GET /api/conges/statistiques/ : Statistiques des congés
+    - GET /api/conges/par_agent/{agent_id}/ : Congés d'un agent
+    - GET /api/conges/par_annee/{annee}/ : Congés par année
+    - POST /api/conges/{id}/approuver/ : Approuver un congé
+    - POST /api/conges/{id}/refuser/ : Refuser un congé
+    """
+    queryset = Conge.objects.all().select_related('agent', 'agent__profil', 'approuve_par')
+    serializer_class = CongeSerializer
+
+    def get_queryset(self):
+        """Filtre les congés par agent et/ou année."""
+        queryset = super().get_queryset()
+        
+        agent_id = self.request.query_params.get('agent_id')
+        if agent_id:
+            queryset = queryset.filter(agent_id=agent_id)
+        
+        annee = self.request.query_params.get('annee')
+        if annee:
+            queryset = queryset.filter(annee_reference=annee)
+        
+        statut = self.request.query_params.get('statut')
+        if statut:
+            queryset = queryset.filter(statut=statut)
+        
+        return queryset
+
+    @action(detail=False, methods=['get'])
+    def statistiques(self, request):
+        """Retourne des statistiques sur les congés."""
+        total = self.get_queryset().count()
+        en_attente = self.get_queryset().filter(statut=Conge.Statut.EN_ATTENTE).count()
+        approuves = self.get_queryset().filter(statut=Conge.Statut.APPROUVE).count()
+        refuses = self.get_queryset().filter(statut=Conge.Statut.REFUSE).count()
+        annules = self.get_queryset().filter(statut=Conge.Statut.ANNULE).count()
+        
+        # Statistiques par type de congé
+        par_type = {}
+        for type_conge in Conge.TypeConge.choices:
+            count = self.get_queryset().filter(type_conge=type_conge[0]).count()
+            if count > 0:
+                par_type[type_conge[1]] = count
+        
+        # Statistiques par agent (top 5)
+        par_agent = {}
+        top_agents = self.get_queryset().values('agent__matricule', 'agent__profil__prenom', 'agent__profil__nom')\
+            .annotate(total=Sum('duree_ouverte'))\
+            .order_by('-total')[:5]
+        for item in top_agents:
+            nom_complet = f"{item['agent__profil__prenom']} {item['agent__profil__nom']} ({item['agent__matricule']})"
+            par_agent[nom_complet] = item['total']
+        
+        return Response({
+            'total': total,
+            'en_attente': en_attente,
+            'approuves': approuves,
+            'refuses': refuses,
+            'annules': annules,
+            'par_type': par_type,
+            'par_agent': par_agent
+        })
+
+    @action(detail=False, methods=['get'], url_path='par_agent/(?P<agent_id>[^/.]+)')
+    def par_agent(self, request, agent_id=None):
+        """Récupère tous les congés d'un agent spécifique."""
+        try:
+            from agents.models import Agent
+            agent = Agent.objects.get(id=agent_id)
+            conges = Conge.objects.filter(agent=agent)
+            serializer = self.get_serializer(conges, many=True)
+            return Response(serializer.data)
+        except Agent.DoesNotExist:
+            return Response(
+                {'error': 'Agent non trouvé'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+    @action(detail=False, methods=['get'], url_path='par_annee/(?P<annee>[^/.]+)')
+    def par_annee(self, request, annee=None):
+        """Récupère tous les congés pour une année donnée."""
+        try:
+            annee_int = int(annee)
+            conges = Conge.objects.filter(annee_reference=annee_int)
+            serializer = self.get_serializer(conges, many=True)
+            return Response(serializer.data)
+        except ValueError:
+            return Response(
+                {'error': 'Année invalide'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+    @action(detail=True, methods=['post'])
+    def approuver(self, request, pk=None):
+        """
+        Approuve un congé.
+        Body: {"commentaire_validation": "Commentaire optionnel"}
+        """
+        conge = self.get_object()
+        
+        if conge.statut != Conge.Statut.EN_ATTENTE:
+            return Response(
+                {'error': 'Seul un congé en attente peut être approuvé.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        conge.statut = Conge.Statut.APPROUVE
+        conge.date_traitement = timezone.now()
+        conge.approuve_par = request.user if request.user.is_authenticated else None
+        
+        commentaire = request.data.get('commentaire_validation')
+        if commentaire:
+            conge.commentaire_validation = commentaire
+        
+        conge.save()
+        
+        # Mettre à jour le solde de congés
+        self._update_solde_conge(conge.agent, conge.annee_reference, conge.duree_ouverte)
+        
+        serializer = self.get_serializer(conge)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'])
+    def refuser(self, request, pk=None):
+        """
+        Refuse un congé.
+        Body: {"commentaire_validation": "Motif du refus"}
+        """
+        conge = self.get_object()
+        
+        if conge.statut != Conge.Statut.EN_ATTENTE:
+            return Response(
+                {'error': 'Seul un congé en attente peut être refusé.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        conge.statut = Conge.Statut.REFUSE
+        conge.date_traitement = timezone.now()
+        conge.approuve_par = request.user if request.user.is_authenticated else None
+        
+        commentaire = request.data.get('commentaire_validation')
+        if commentaire:
+            conge.commentaire_validation = commentaire
+        else:
+            return Response(
+                {'error': 'Un motif de refus est requis.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        conge.save()
+        
+        serializer = self.get_serializer(conge)
+        return Response(serializer.data)
+
+    def _update_solde_conge(self, agent, annee, duree):
+        """Met à jour le solde de congés de l'agent."""
+        solde, created = SoldeConge.objects.get_or_create(
+            agent=agent,
+            annee=annee,
+            defaults={
+                'total_jours': 30,
+                'jours_pris': 0,
+                'jours_restants': 30,
+                'jours_en_attente': 0
+            }
+        )
+        
+        # Calculer les jours déjà pris (approuvés) pour cette année
+        jours_pris_total = Conge.objects.filter(
+            agent=agent,
+            annee_reference=annee,
+            statut=Conge.Statut.APPROUVE
+        ).aggregate(total=Sum('duree_ouverte'))['total'] or 0
+        
+        # Calculer les jours en attente
+        jours_en_attente = Conge.objects.filter(
+            agent=agent,
+            annee_reference=annee,
+            statut=Conge.Statut.EN_ATTENTE
+        ).aggregate(total=Sum('duree_ouverte'))['total'] or 0
+        
+        solde.jours_pris = jours_pris_total
+        solde.jours_restants = solde.total_jours - jours_pris_total
+        solde.jours_en_attente = jours_en_attente
+        solde.save()
+
+
+class SoldeCongeViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    ViewSet pour consulter les soldes de congés.
+    
+    - GET /api/soldes-conges/ : Liste de tous les soldes
+    - GET /api/soldes-conges/{id}/ : Détails d'un solde
+    - GET /api/soldes-conges/par_agent/{agent_id}/ : Solde d'un agent
+    - GET /api/soldes-conges/par_annee/{annee}/ : Soldes par année
+    """
+    queryset = SoldeConge.objects.all().select_related('agent', 'agent__profil')
+    serializer_class = SoldeCongeSerializer
+
+    def get_queryset(self):
+        """Filtre les soldes par agent et/ou année."""
+        queryset = super().get_queryset()
+        
+        agent_id = self.request.query_params.get('agent_id')
+        if agent_id:
+            queryset = queryset.filter(agent_id=agent_id)
+        
+        annee = self.request.query_params.get('annee')
+        if annee:
+            queryset = queryset.filter(annee=annee)
+        
+        return queryset
+
+    @action(detail=False, methods=['get'], url_path='par_agent/(?P<agent_id>[^/.]+)')
+    def par_agent(self, request, agent_id=None):
+        """Récupère le solde d'un agent pour l'année en cours."""
+        try:
+            from agents.models import Agent
+            agent = Agent.objects.get(id=agent_id)
+            annee = request.query_params.get('annee', timezone.now().year)
+            
+            solde, created = SoldeConge.objects.get_or_create(
+                agent=agent,
+                annee=annee,
+                defaults={
+                    'total_jours': 30,
+                    'jours_pris': 0,
+                    'jours_restants': 30,
+                    'jours_en_attente': 0
+                }
+            )
+            
+            # Recalculer les jours utilisés
+            jours_pris = Conge.objects.filter(
+                agent=agent,
+                annee_reference=annee,
+                statut=Conge.Statut.APPROUVE
+            ).aggregate(total=Sum('duree_ouverte'))['total'] or 0
+            
+            jours_attente = Conge.objects.filter(
+                agent=agent,
+                annee_reference=annee,
+                statut=Conge.Statut.EN_ATTENTE
+            ).aggregate(total=Sum('duree_ouverte'))['total'] or 0
+            
+            solde.jours_pris = jours_pris
+            solde.jours_restants = solde.total_jours - jours_pris
+            solde.jours_en_attente = jours_attente
+            solde.save()
+            
+            serializer = self.get_serializer(solde)
+            return Response(serializer.data)
+            
+        except Agent.DoesNotExist:
+            return Response(
+                {'error': 'Agent non trouvé'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+    @action(detail=False, methods=['get'], url_path='par_annee/(?P<annee>[^/.]+)')
+    def par_annee(self, request, annee=None):
+        """Récupère tous les soldes pour une année donnée."""
+        try:
+            annee_int = int(annee)
+            soldes = SoldeConge.objects.filter(annee=annee_int)
+            serializer = self.get_serializer(soldes, many=True)
+            return Response(serializer.data)
+        except ValueError:
+            return Response(
+                {'error': 'Année invalide'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
