@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*.sqlite3
+
+# Environnement virtuel
+env/
+venv/
+.venv/
+
+# Variables d'environnement
+.env
+
+# Django
+stat
